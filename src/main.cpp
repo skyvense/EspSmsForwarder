@@ -45,7 +45,7 @@ void publishMQTT(const char* topic, const char* message) {
 }
 
 // 发送AT命令并发布响应到MQTT
-void sendATCommand(String command) {
+String sendATCommand(String command) {
   // 发送AT命令到串口并发布到MQTT
   Serial.println(command);
   publishMQTT(vAtResponseTopic, ("AT Command: " + command).c_str());
@@ -61,11 +61,9 @@ void sendATCommand(String command) {
   // 发布AT命令响应到MQTT
   if (response.length() > 0) {
     publishMQTT(vAtResponseTopic, ("AT Response: " + response).c_str());
-    if (command == "AT") {
-      // 检查是否收到任何响应，不仅仅是OK
-      atResponseReceived = true;
-    }
   }
+  
+  return response;
 }
 
 // 执行模块复位
@@ -88,22 +86,16 @@ void resetModem() {
   // 初始化模块
   moduleInitialized = false;
   int retryCount = 0;
-  while (!moduleInitialized && retryCount < 3) {  // 减少重试次数
-    sendATCommand("AT");
-    delay(100);  // 减少等待时间
-    if (Serial.available()) {
-      String response = "";
-      while (Serial.available()) {
-        response += char(Serial.read());
-      }
-      if (response.length() > 0) {
-        moduleInitialized = true;
-        publishMQTT(vAtResponseTopic, "Module initialized successfully");
-      } else {
-        retryCount++;
-        publishMQTT(vAtResponseTopic, ("Initialization attempt " + String(retryCount) + " failed").c_str());
-        delay(100);  // 减少等待时间
-      }
+  
+  while (!moduleInitialized && retryCount < 3) {
+    String response = sendATCommand("AT");
+    if (response.length() > 0) {
+      moduleInitialized = true;
+      publishMQTT(vAtResponseTopic, "Module initialized successfully");
+    } else {
+      retryCount++;
+      publishMQTT(vAtResponseTopic, ("Initialization attempt " + String(retryCount) + " failed").c_str());
+      delay(100);
     }
   }
   
@@ -119,10 +111,16 @@ void resetModem() {
 // 将十六进制编码的字符串解码为 UTF-8 中文字符串
 String decodeHexToString(String hexString) {
   String result = "";
-  for (int i = 0; i < hexString.length(); i += 4) {
-    String hexChar = hexString.substring(i, i + 4);
-    char c = (char)strtol(hexChar.c_str(), NULL, 16);
-    result += c;
+  // 跳过PDU头部（前14个字符）
+  int startPos = 14;
+  
+  // 每两个字符转换为一个字节
+  for (int i = startPos; i < hexString.length(); i += 2) {
+    if (i + 1 < hexString.length()) {
+      String byteString = hexString.substring(i, i + 2);
+      char byte = (char)strtol(byteString.c_str(), NULL, 16);
+      result += byte;
+    }
   }
   return result;
 }
@@ -136,8 +134,9 @@ String extractMessageContent(String rawMessage) {
   if (end == -1) return ""; 
 
   String content = rawMessage.substring(end + 2);
-
-  if (content.length() % 4 == 0) {
+  
+  // 检查是否是十六进制编码的内容
+  if (content.length() > 14) {  // 确保有足够长度包含PDU头部
     String decodedContent = decodeHexToString(content);
     return decodedContent;
   }
@@ -173,7 +172,10 @@ void setup() {
   mqtt.setBufferSize(2048);
   mqtt.setCallback(callback);
 
-
+  delay(500); // 等待MQTT连接
+  
+  // 执行一次复位
+  resetModem();
 }
 
 // ESP8266 芯片ID
@@ -195,11 +197,8 @@ void loop() {
     // 定时发送 AT 指令，检测设备是否存活
     if (currentMillis - previousMillis >= interval) {
       previousMillis = currentMillis;
-      atResponseReceived = false;  // 重置AT响应标志
-      sendATCommand("AT");
-      
-      // 如果没有收到AT响应，执行复位
-      if (!atResponseReceived) {
+      String response = sendATCommand("AT");
+      if (response.length() == 0) {
         publishMQTT(vAtResponseTopic, "No AT response received, resetting modem...");
         resetModem();
       }
