@@ -111,16 +111,31 @@ void resetModem() {
 // 将十六进制编码的字符串解码为 UTF-8 中文字符串
 String decodeHexToString(String hexString) {
   String result = "";
-  // 跳过PDU头部（前14个字符）
-  int startPos = 14;
   
   publishMQTT(vAtResponseTopic, ("Decoding hex string: " + hexString).c_str());
+  
+  // PDU格式解析
+  // 1. 跳过SCA (Service Center Address) - 第一个字节表示长度
+  int scaLength = strtol(hexString.substring(0, 2).c_str(), NULL, 16) * 2;
+  int startPos = scaLength + 2;  // 加2是因为长度字节本身
+  
+  publishMQTT(vAtResponseTopic, ("SCA length: " + String(scaLength/2) + " bytes").c_str());
   publishMQTT(vAtResponseTopic, ("Starting decode from position: " + String(startPos)).c_str());
   
-  // 每两个字符转换为一个字节
-  for (int i = startPos; i < hexString.length(); i += 2) {
-    if (i + 1 < hexString.length()) {
-      String byteString = hexString.substring(i, i + 2);
+  // 2. 跳过PDU头部信息
+  // TPDU Type (1 byte)
+  startPos += 2;
+  
+  // 3. 获取消息长度
+  int messageLength = strtol(hexString.substring(startPos, startPos + 2).c_str(), NULL, 16);
+  startPos += 2;
+  
+  publishMQTT(vAtResponseTopic, ("Message length: " + String(messageLength) + " bytes").c_str());
+  
+  // 4. 解码消息内容
+  for (int i = 0; i < messageLength * 2; i += 2) {
+    if (startPos + i + 1 < hexString.length()) {
+      String byteString = hexString.substring(startPos + i, startPos + i + 2);
       char byte = (char)strtol(byteString.c_str(), NULL, 16);
       result += byte;
       publishMQTT(vAtResponseTopic, ("Decoded byte: " + byteString + " -> " + String(byte)).c_str());
@@ -150,13 +165,15 @@ String extractMessageContent(String rawMessage) {
   String content = rawMessage.substring(end + 2);
   publishMQTT(vAtResponseTopic, ("Extracted content: " + content).c_str());
   
-  // 检查是否是十六进制编码的内容
-  if (content.length() > 14) {  // 确保有足够长度包含PDU头部
-    publishMQTT(vAtResponseTopic, "Content appears to be hex encoded, attempting decode");
+  // 检查是否是PDU格式的内容
+  // 如果内容以数字开头且长度大于14，可能是PDU格式
+  if (content.length() > 14 && isDigit(content[0])) {
+    publishMQTT(vAtResponseTopic, "Content appears to be PDU encoded, attempting decode");
     String decodedContent = decodeHexToString(content);
     return decodedContent;
   }
   
+  // 否则认为是纯文本
   publishMQTT(vAtResponseTopic, "Content appears to be plain text");
   return content;
 }
