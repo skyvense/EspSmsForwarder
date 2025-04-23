@@ -114,33 +114,50 @@ String decodeHexToString(String hexString) {
   // 跳过PDU头部（前14个字符）
   int startPos = 14;
   
+  publishMQTT(vAtResponseTopic, ("Decoding hex string: " + hexString).c_str());
+  publishMQTT(vAtResponseTopic, ("Starting decode from position: " + String(startPos)).c_str());
+  
   // 每两个字符转换为一个字节
   for (int i = startPos; i < hexString.length(); i += 2) {
     if (i + 1 < hexString.length()) {
       String byteString = hexString.substring(i, i + 2);
       char byte = (char)strtol(byteString.c_str(), NULL, 16);
       result += byte;
+      publishMQTT(vAtResponseTopic, ("Decoded byte: " + byteString + " -> " + String(byte)).c_str());
     }
   }
+  
+  publishMQTT(vAtResponseTopic, ("Final decoded result: " + result).c_str());
   return result;
 }
 
 // 提取短信内容
 String extractMessageContent(String rawMessage) {
+  publishMQTT(vAtResponseTopic, ("Raw message received: " + rawMessage).c_str());
+  
   int start = rawMessage.indexOf("+CMT:"); 
-  if (start == -1) return "";
+  if (start == -1) {
+    publishMQTT(vAtResponseTopic, "No +CMT: found in message");
+    return "";
+  }
 
   int end = rawMessage.indexOf("\r\n", start);
-  if (end == -1) return ""; 
+  if (end == -1) {
+    publishMQTT(vAtResponseTopic, "No message end found");
+    return ""; 
+  } 
 
   String content = rawMessage.substring(end + 2);
+  publishMQTT(vAtResponseTopic, ("Extracted content: " + content).c_str());
   
   // 检查是否是十六进制编码的内容
   if (content.length() > 14) {  // 确保有足够长度包含PDU头部
+    publishMQTT(vAtResponseTopic, "Content appears to be hex encoded, attempting decode");
     String decodedContent = decodeHexToString(content);
     return decodedContent;
   }
   
+  publishMQTT(vAtResponseTopic, "Content appears to be plain text");
   return content;
 }
 
@@ -213,13 +230,16 @@ void loop() {
 
       // 通过解析 +CMT 命令提取短信内容
       if (message.indexOf("+CMT:") >= 0) {
+        publishMQTT(vAtResponseTopic, "SMS message detected, processing...");
         String smsContent = extractMessageContent(message);
         if (smsContent != "") {
-          publishMQTT(vAtResponseTopic, ("SMS: " + smsContent).c_str());
+          publishMQTT(vAtResponseTopic, ("Decoded SMS content: " + smsContent).c_str());
+        } else {
+          publishMQTT(vAtResponseTopic, "Failed to decode SMS content");
         }
       } else {
         // 发送其他串口消息到MQTT
-        publishMQTT(vAtResponseTopic, message.c_str());
+        publishMQTT(vAtResponseTopic, ("Serial message: " + message).c_str());
       }
     }
   } 
