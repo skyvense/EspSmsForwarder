@@ -5,8 +5,8 @@
 #include <ESP8266HTTPClient.h>
 
 struct Config {
-  String SSID = "SkyWifi2";
-  String Passwd = "firefox10";
+  String SSID = "test";
+  String Passwd = "test";
   String Server = "http://la.v6ip.cn/ZeGyNgFFkhBayhbqnMqJ4D";
   String Token = "0000";
 };
