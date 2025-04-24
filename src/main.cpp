@@ -13,6 +13,7 @@
 
 // Function prototypes
 String extractMessageContent(String rawMessage);
+String urlEncode(const String& str);
 
 /*audio bug added*/
 #define OLED_RESET -1  
@@ -36,6 +37,11 @@ unsigned long previousMillis = 0;  // 上次发送 AT 指令的时间
 const long interval = 6000;  // 每 6 秒发送一次 AT 指令
 bool atResponseReceived = false;  // 是否收到AT响应
 bool moduleInitialized = false;  // 模块是否已初始化
+
+// 添加信号质量报告相关变量
+unsigned long lastSignalReportTime = 0;
+const unsigned long SIGNAL_REPORT_INTERVAL = 8 * 60 * 60 * 1000; // 8小时的毫秒数
+bool initialSignalReportSent = false;
 
 // 发送MQTT消息的辅助函数
 void publishMQTT(const char* topic, const char* message) {
@@ -109,6 +115,37 @@ void resetModem() {
   }
 }
 
+// URL encode a string
+String urlEncode(const String& str) {
+    String encodedString = "";
+    char c;
+    char code0;
+    char code1;
+    
+    for (int i = 0; i < str.length(); i++) {
+        c = str.charAt(i);
+        if (c == ' ') {
+            encodedString += '+';
+        } else if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+            encodedString += c;
+        } else {
+            code1 = (c & 0xf) + '0';
+            if ((c & 0xf) > 9) {
+                code1 = (c & 0xf) - 10 + 'A';
+            }
+            c = (c >> 4) & 0xf;
+            code0 = c + '0';
+            if (c > 9) {
+                code0 = c - 10 + 'A';
+            }
+            encodedString += '%';
+            encodedString += code0;
+            encodedString += code1;
+        }
+    }
+    return encodedString;
+}
+
 // 提取短信内容
 String extractMessageContent(String rawMessage) {
   // 检查输入字符串是否为空
@@ -175,8 +212,11 @@ String extractMessageContent(String rawMessage) {
   fullMessage += "Time: " + dateTime + "\n";
   fullMessage += "Content: " + decodedContent;
 
+  // URL encode the decoded content
+  String encodedContent = urlEncode(decodedContent);
+  
   // 构建HTTP请求路径
-  String httpPath = "/EspMsg:" + senderNumber + "/" + decodedContent;
+  String httpPath = "/EspMsg:" + senderNumber + "/" + encodedContent;
   
   // 发送HTTP请求
   if (WiFi.status() == WL_CONNECTED) {
@@ -205,6 +245,13 @@ void callback(char* topic, byte* payload, unsigned int length) {
   }
 }
 
+// 发送信号质量报告的函数
+void sendSignalQualityReport(int signalQuality, bool isInitial = false) {
+  String httpPath = "/EspMsg/Signal:" + String(signalQuality);
+  wifi.httpGet(httpPath);
+  publishMQTT(vAtResponseTopic, (String(isInitial ? "Initial" : "Periodic") + " signal quality report sent: " + String(signalQuality)).c_str());
+  lastSignalReportTime = millis();
+}
 
 void setup() {
   Serial.begin(115200);  // 使用硬件串口，同时用于调试和Air780E通信
@@ -260,10 +307,36 @@ void loop() {
     // 定时发送 AT 指令，检测设备是否存活
     if (currentMillis - previousMillis >= interval) {
       previousMillis = currentMillis;
-      String response = sendATCommand("AT");
+      String response = sendATCommand("AT+CSQ");
       if (response.length() == 0) {
         publishMQTT(vAtResponseTopic, "No AT response received, resetting modem...");
         resetModem();
+      }
+      else
+      {
+        if (response.indexOf("+CSQ:") >= 0) {
+          String signalStr = response.substring(response.indexOf("+CSQ:") + 5, response.indexOf(","));
+          signalStr.trim();
+          int signalQuality = signalStr.toInt();
+          publishMQTT(vAtResponseTopic, ("Signal Quality: " + String(signalQuality)).c_str());
+          if (signalQuality < 64 && signalQuality > 1) //valid signal quality
+          {
+            // 发送初始信号质量报告
+            if (!initialSignalReportSent) {
+              sendSignalQualityReport(signalQuality, true);
+              initialSignalReportSent = true;
+            }
+            
+            // 每8小时发送一次信号质量报告
+            if (currentMillis - lastSignalReportTime >= SIGNAL_REPORT_INTERVAL) {
+              sendSignalQualityReport(signalQuality, false);
+            }
+            
+            if (signalQuality < 10) {
+              publishMQTT(vAtResponseTopic, ("Signal quality is too low: " + String(signalQuality)).c_str());
+            }
+          }
+        }
       }
     }
 
@@ -330,11 +403,9 @@ void loop() {
 
   delay(100);  // 减少主循环延迟
   loop_count++;
-  if (loop_count > 10) 
+  if (loop_count % 10 == 0) 
   {
     publishMQTT(vAtResponseTopic, String("keep alive count:" + String(loop_count)).c_str());
-    loop_count = 0;
+    led.flash(2, 25, 25, 0, 0);
   }
-
-  led.flash(2, 25, 25, 0, 0);
 }
