@@ -184,7 +184,7 @@ String EspSmartWifi::httpGet(const String& path) {
         return "";
     }
 
-    String url = _config.Server + path;
+    String url = _config.Server + path + "?icon=https://support.arduino.cc/hc/article_attachments/12416033021852.png";
     Serial_debug.print("HTTP GET: ");
     Serial_debug.println(url);
 
