@@ -9,9 +9,10 @@
 #include <ArduinoJson.h>
 
 #include "EspSmartWifi.h"
+#include "pdu.h"
 
 // Function prototypes
-String decodeHexToString(String hexString);
+String extractMessageContent(String rawMessage);
 
 /*audio bug added*/
 #define OLED_RESET -1  
@@ -20,6 +21,7 @@ String decodeHexToString(String hexString);
 
 EasyLed led(STATUS_LED, EasyLed::ActiveLevel::Low, EasyLed::State::Off);  //Use this for an active-low LED
 EspSmartWifi wifi(led);
+PDUHelper pduHelper;
 
 // MQTT服务器信息
 const char* mqttServer = "192.168.8.3";
@@ -28,8 +30,7 @@ const int mqttPort = 1883;
 // MQTT主题
 const char* vAtResponseTopic = "/espSmsMonitor/at_response";
 
-WiFiClient espClient;
-PubSubClient mqtt(espClient);
+PubSubClient mqtt(wifi.client);
 
 unsigned long previousMillis = 0;  // 上次发送 AT 指令的时间
 const long interval = 6000;  // 每 6 秒发送一次 AT 指令
@@ -70,7 +71,7 @@ String sendATCommand(String command) {
 void resetModem() {
   publishMQTT(vAtResponseTopic, "Performing modem reset...");
   digitalWrite(MODEM_RESET, HIGH);
-  delay(150);  // 减少复位时间
+  delay(1000);  // 减少复位时间
   digitalWrite(MODEM_RESET, LOW);
   delay(1000);  // 减少等待时间
   publishMQTT(vAtResponseTopic, "Modem reset completed");
@@ -108,74 +109,88 @@ void resetModem() {
   }
 }
 
-// 将十六进制编码的字符串解码为 UTF-8 中文字符串
-String decodeHexToString(String hexString) {
-  String result = "";
-  
-  publishMQTT(vAtResponseTopic, ("Decoding hex string: " + hexString).c_str());
-  
-  // PDU格式解析
-  // 1. 跳过SCA (Service Center Address) - 第一个字节表示长度
-  int scaLength = strtol(hexString.substring(0, 2).c_str(), NULL, 16) * 2;
-  int startPos = scaLength + 2;  // 加2是因为长度字节本身
-  
-  publishMQTT(vAtResponseTopic, ("SCA length: " + String(scaLength/2) + " bytes").c_str());
-  publishMQTT(vAtResponseTopic, ("Starting decode from position: " + String(startPos)).c_str());
-  
-  // 2. 跳过PDU头部信息
-  // TPDU Type (1 byte)
-  startPos += 2;
-  
-  // 3. 获取消息长度
-  int messageLength = strtol(hexString.substring(startPos, startPos + 2).c_str(), NULL, 16);
-  startPos += 2;
-  
-  publishMQTT(vAtResponseTopic, ("Message length: " + String(messageLength) + " bytes").c_str());
-  
-  // 4. 解码消息内容
-  for (int i = 0; i < messageLength * 2; i += 2) {
-    if (startPos + i + 1 < hexString.length()) {
-      String byteString = hexString.substring(startPos + i, startPos + i + 2);
-      char byte = (char)strtol(byteString.c_str(), NULL, 16);
-      result += byte;
-      publishMQTT(vAtResponseTopic, ("Decoded byte: " + byteString + " -> " + String(byte)).c_str());
-    }
-  }
-  
-  publishMQTT(vAtResponseTopic, ("Final decoded result: " + result).c_str());
-  return result;
-}
-
 // 提取短信内容
 String extractMessageContent(String rawMessage) {
-  publishMQTT(vAtResponseTopic, ("Raw message received: " + rawMessage).c_str());
-  
-  int start = rawMessage.indexOf("+CMT:"); 
-  if (start == -1) {
-    publishMQTT(vAtResponseTopic, "No +CMT: found in message");
+  // 检查输入字符串是否为空
+  if (rawMessage.length() == 0) {
     return "";
   }
 
-  int end = rawMessage.indexOf("\r\n", start);
-  if (end == -1) {
-    publishMQTT(vAtResponseTopic, "No message end found");
-    return ""; 
-  } 
-
-  String content = rawMessage.substring(end + 2);
-  publishMQTT(vAtResponseTopic, ("Extracted content: " + content).c_str());
-  
-  // 检查是否是PDU格式的内容
-  // 如果内容以数字开头且长度大于14，可能是PDU格式
-  if (content.length() > 14 && isDigit(content[0])) {
-    publishMQTT(vAtResponseTopic, "Content appears to be PDU encoded, attempting decode");
-    String decodedContent = decodeHexToString(content);
-    return decodedContent;
+  int start = rawMessage.indexOf("+CMT:"); 
+  if (start == -1) {
+    return "";
   }
+
+  // 提取发送者号码
+  int numberStart = rawMessage.indexOf("\"", start);
+  if (numberStart == -1) {
+    return "";
+  }
+  numberStart++; // 跳过引号
+
+  int numberEnd = rawMessage.indexOf("\"", numberStart);
+  if (numberEnd == -1) {
+    return "";
+  }
+  String senderNumber = rawMessage.substring(numberStart, numberEnd);
+
+  // 提取日期时间
+  int dateStart = rawMessage.indexOf("\"", numberEnd + 1);
+  if (dateStart == -1) {
+    return "";
+  }
+  dateStart++; // 跳过引号
+
+  int dateEnd = rawMessage.indexOf("\"", dateStart);
+  if (dateEnd == -1) {
+    return "";
+  }
+  String dateTime = rawMessage.substring(dateStart, dateEnd);
+
+  // 提取PDU数据
+  int pduStart = rawMessage.indexOf("\r\n", dateEnd);
+  if (pduStart == -1) {
+    return "";
+  }
+  pduStart += 2; // 跳过\r\n
+
+  // 检查是否还有内容
+  if (pduStart >= rawMessage.length()) {
+    return "";
+  }
+
+  String pduData = rawMessage.substring(pduStart);
+  pduData.trim();
+
+  // 检查PDU数据是否为空
+  if (pduData.length() == 0) {
+    return "";
+  }
+
+  // 解码消息内容
+  String decodedContent = PDUHelper::decodeContent(pduData);
+
+  // 构建完整的消息信息
+  String fullMessage = "From: " + senderNumber + "\n";
+  fullMessage += "Time: " + dateTime + "\n";
+  fullMessage += "Content: " + decodedContent;
+
+  // 构建HTTP请求路径
+  String httpPath = "/EspMsg:" + senderNumber + "/" + decodedContent;
   
-  // 否则认为是纯文本
-  publishMQTT(vAtResponseTopic, "Content appears to be plain text");
-  return content;
+  // 发送HTTP请求
+  if (WiFi.status() == WL_CONNECTED) {
+    publishMQTT(vAtResponseTopic, ("Sending HTTP request: " + httpPath).c_str());
+    String response = wifi.httpGet(httpPath);
+    publishMQTT(vAtResponseTopic, ("HTTP Response: " + response).c_str());
+  } else {
+    publishMQTT(vAtResponseTopic, "WiFi not connected, cannot send HTTP request");
+  }
+
+  // 发布完整的消息信息到MQTT
+  publishMQTT(vAtResponseTopic, ("SMS Message: " + fullMessage).c_str());
+
+  return fullMessage;
 }
 
 // 回调函数，用于处理接收到的MQTT消息
@@ -190,8 +205,10 @@ void callback(char* topic, byte* payload, unsigned int length) {
   }
 }
 
+
 void setup() {
   Serial.begin(115200);  // 使用硬件串口，同时用于调试和Air780E通信
+  Serial.setRxBufferSize(2048); // 增加串口接收缓冲区大小
   
   // 初始化复位引脚
   pinMode(MODEM_RESET, OUTPUT);
@@ -200,6 +217,12 @@ void setup() {
   wifi.initFS();
   wifi.ConnectWifi();
   wifi.DisplayIP();
+  
+  // Test HTTP request after WiFi connection
+  if (WiFi.status() == WL_CONNECTED) {
+    String response = wifi.httpGet("/ESP SMS Forwarder/WL_CONNECTED");
+    publishMQTT(vAtResponseTopic, ("HTTP Test Response: " + response).c_str());
+  }
   
   // 设置MQTT服务器和回调函数
   mqtt.setServer(mqttServer, mqttPort);
@@ -216,6 +239,12 @@ void setup() {
 String chipId = String(ESP.getChipId(), HEX);
 String ClientId = "EspSmsForwarder" + chipId;
 int loop_count = 0;
+
+// 添加串口缓冲区
+String serialBuffer = "";
+unsigned long lastSerialReadTime = 0;
+const unsigned long SERIAL_TIMEOUT = 1000; // 增加到1000ms超时
+const int MAX_BUFFER_SIZE = 4096; // 最大缓冲区大小
 
 void loop() {
   wifi.WiFiWatchDog();
@@ -238,17 +267,35 @@ void loop() {
       }
     }
 
-    // 检测串口是否收到短信
+    // 检测串口是否收到数据
     if (Serial.available()) {
-      String message = "";
-      while (Serial.available()) {
-        message += char(Serial.read());
+      // 读取所有可用数据
+      while (Serial.available() && serialBuffer.length() < MAX_BUFFER_SIZE) {
+        serialBuffer += char(Serial.read());
       }
+      
+      // 更新最后读取时间
+      lastSerialReadTime = currentMillis;
+      
+      // 如果缓冲区已满，强制处理
+      if (serialBuffer.length() >= MAX_BUFFER_SIZE) {
+        publishMQTT(vAtResponseTopic, "Serial buffer full, processing data...");
+      }
+    }
+    
+    // 检查是否有完整消息或超时
+    if (serialBuffer.length() > 0 && 
+        (currentMillis - lastSerialReadTime > SERIAL_TIMEOUT || 
+         serialBuffer.indexOf("\r\n") != -1 ||
+         serialBuffer.length() >= MAX_BUFFER_SIZE)) {
+      
+      // 打印原始串口数据到MQTT
+      publishMQTT(vAtResponseTopic, ("Raw Serial Data: " + serialBuffer).c_str());
 
       // 通过解析 +CMT 命令提取短信内容
-      if (message.indexOf("+CMT:") >= 0) {
+      if (serialBuffer.indexOf("+CMT:") >= 0) {
         publishMQTT(vAtResponseTopic, "SMS message detected, processing...");
-        String smsContent = extractMessageContent(message);
+        String smsContent = extractMessageContent(serialBuffer);
         if (smsContent != "") {
           publishMQTT(vAtResponseTopic, ("Decoded SMS content: " + smsContent).c_str());
         } else {
@@ -256,8 +303,11 @@ void loop() {
         }
       } else {
         // 发送其他串口消息到MQTT
-        publishMQTT(vAtResponseTopic, ("Serial message: " + message).c_str());
+        publishMQTT(vAtResponseTopic, ("Serial message: " + serialBuffer).c_str());
       }
+      
+      // 清空缓冲区
+      serialBuffer = "";
     }
   } 
   else 
@@ -280,7 +330,11 @@ void loop() {
 
   delay(100);  // 减少主循环延迟
   loop_count++;
-  publishMQTT(vAtResponseTopic, String("keep alive count:" + String(loop_count)).c_str());
+  if (loop_count > 10) 
+  {
+    publishMQTT(vAtResponseTopic, String("keep alive count:" + String(loop_count)).c_str());
+    loop_count = 0;
+  }
 
   led.flash(2, 25, 25, 0, 0);
 }
