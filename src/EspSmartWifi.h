@@ -5,8 +5,8 @@
 #include <ESP8266HTTPClient.h>
 
 struct Config {
-  String SSID = "YOUR_WIFI_SSID";
-  String Passwd = "YOUR_WIFI_PASSWORD";
+  String SSID = "test";
+  String Passwd = "test";
   String Server = "http://la.v6ip.cn/ZeGyNgFFkhBayhbqnMqJ4D";
   String Token = "0000";
 };
