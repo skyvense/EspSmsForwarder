@@ -177,3 +177,33 @@ void EspSmartWifi::DisplayIP()
 {
 
 }
+
+String EspSmartWifi::httpGet(const String& path) {
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial_debug.println("WiFi not connected");
+        return "";
+    }
+
+    String url = _config.Server + path;
+    Serial_debug.print("HTTP GET: ");
+    Serial_debug.println(url);
+
+    HTTPClient http;
+    http.begin(client, url);
+    int httpCode = http.GET();
+
+    String payload = "";
+    if (httpCode > 0) {
+        if (httpCode == HTTP_CODE_OK) {
+            payload = http.getString();
+            Serial_debug.println("HTTP Response: " + payload);
+        } else {
+            Serial_debug.printf("HTTP GET failed, error: %s\n", http.errorToString(httpCode).c_str());
+        }
+    } else {
+        Serial_debug.printf("HTTP GET failed, error: %s\n", http.errorToString(httpCode).c_str());
+    }
+
+    http.end();
+    return payload;
+}

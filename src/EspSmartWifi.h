@@ -2,11 +2,12 @@
 #include <Arduino.h>
 #include <FS.h>
 #include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
 
 struct Config {
-  String SSID = "S1";
-  String Passwd = "checkin888";
-  String Server = "http://la.v6ip.cn/ZeGyNgFFkhBayhbqnMqJ4D/";
+  String SSID = "SkyWifi2";
+  String Passwd = "firefox10";
+  String Server = "http://la.v6ip.cn/ZeGyNgFFkhBayhbqnMqJ4D";
   String Token = "0000";
 };
 
@@ -47,6 +48,11 @@ public:
     bool WiFiWatchDog();
     void ConnectWifi();
     void DisplayIP();
+    
+    // HTTP client methods
+    String httpGet(const String& path);
+    const Config& getConfig() const { return _config; }
+    WiFiClient client;
 };
 
 
